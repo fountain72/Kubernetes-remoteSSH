@@ -1,0 +1,251 @@
+#!/usr/bin/env python3
+import sys,argparse,re
+from argparse import RawTextHelpFormatter
+from kubernetes import  client,config
+from kubernetes.stream import stream
+from itertools import groupby
+from rich.console import Console
+from rich.columns import Columns
+from rich.markdown import Markdown
+from rich.panel import Panel
+from rich import print
+
+
+# -*- coding: utf-8 -*-
+
+import os
+import locale
+os.environ["PYTHONIOENCODING"] = "utf-8"
+thisLocale=locale.setlocale(category=locale.LC_ALL, locale="en_GB.UTF-8")
+
+description = '''
+
+MWP Remote Commands to send commands across all PODs/Containers within the same Namespace.
+
+version 2.0    02/26/2022
+
+Type -h or --help for a full list of available options.
+
+Cheat sheet:
+
+1) To run on all Pods and containers, just give namespace options with -n NAMESPACES, no need
+   to give option with -p or -c
+   example:
+
+   rmtKmd -n NAMESPACES -q "date;time"
+
+2) for "-p PODS", you can give multiple POD name seperated by comma, or the common part of their name,
+   if given with "-" at the beginning or the end of option, please run as "-p=-xdms" (example)
+
+   example:
+
+   rmtKmd -n NAMESPACES -p aa,bb -q "date;time"
+   rmtKmd -n NAMESPACES -p aa-0,bb-0 -q "date;time"
+   rmtKmd -n NAMESPACES -p=-aa -q "date;time"
+
+3) To run "cli" on mavenir platforms, for command option please refer the example below
+
+   rmtKmd -n NAMESPACES -p NAMESPACES-aa-0 -q "cli << EOF
+   > show table
+   > EOF"
+
+
+'''
+
+MARKDOWN = """
+# **rmtKmd**
+
+> MWP Remote Command tools to send commands across all PODs/Containers within the same Namespace.
+> * Alex Lu, yanfeng.lu@gmail.com
+> * version 1.0 02/12/2022
+> * version 2.0 02/26/2022
+
+
+
+## Usage
+**`rmtKmd`** -n *[namespace]* -p *[POD.name/POD.type]* -c *[container.name] -q **[bash.command]* -t *[optional, panel result]*
+
+## Example
+```bash
+1. rmtKmd -n NAMESPACES -p XXXXX -q "date"
+2. rmtKmd -n NAMESPACES -q "pgrep xagt" # default choose 'all' for POD and containers under the POD
+3. rmtKmd -n NAMESPACES -q "readShm" -t  #(show in panel version)
+```
+"""
+# console = Console()
+#md = Markdown(MARKDOWN)
+# console.print(md)
+
+def getAllNsPodContainer_Dict(v1):
+    ret = v1.list_pod_for_all_namespaces(watch=False)
+
+    full_dict={}
+
+    for i in ret.items:
+        ns, pod, containers = i.metadata.namespace, i.metadata.name, [y.name for y in i.spec.containers]
+        full_dict.setdefault(ns,{})[pod] = containers
+
+    return full_dict
+
+def getTargetNsPodContainer_Dict(v1,ns):
+    targetNs = ns
+    ret = v1.list_pod_for_all_namespaces(watch=False)
+
+    full_dict={}
+
+    for i in ret.items:
+        if i.metadata.namespace == targetNs:
+            ns, pod, containers = i.metadata.namespace, i.metadata.name, [y.name for y in i.spec.containers]
+            full_dict.setdefault(ns,{})[pod] = containers
+
+    return full_dict
+
+def genTargetNsPod_Dict(v1,ns):
+    pod_list = v1.list_namespaced_pod(ns)
+    ns_dict = {}
+    ns_dict['all'] = []
+    if not isinstance(ns_dict['all'], list):
+        # If type is not list then make it list
+        ns_dict['all'] = [ns_dict]
+    for pod in pod_list.items:
+        ns_dict['all'].append(pod.metadata.name)
+    test_list = ns_dict['all']
+    import re
+    test_list.sort(key=lambda test_list : (list(map(str, re.findall(r'-\w+\-', test_list)))[0],list(map(int, re.findall(r'-\d+', test_list)))[0]), reverse=True)
+    for j, i in groupby(test_list,lambda a: a.split('-')[1]):
+        ns_dict[j]=list(i)
+    return ns_dict
+
+def execPodCmd(v1,ns,pod,cmd,my_panel):
+    exec_command = [
+    'bash',
+    '-c',
+    cmd]
+    try:
+        resp = stream(v1.connect_get_namespaced_pod_exec, pod, ns,
+                    command=exec_command,
+                  stderr=True, stdin=False,
+                  stdout=True, tty=False)
+        if my_panel == True:
+            return f'''{resp}'''
+        else:
+            print(f''':::[#f92572 bold]{pod}[/]:::''')
+            print(f'''{resp}''')
+            return
+    except:
+        if my_panel == True:
+            return None
+        else:
+            print(f''':::[#f92572 bold]{pod}[/]::: Not Working''')
+            return
+
+def execContainerCmd(v1,ns,pod, cmd,container,my_panel):
+    exec_command = [
+    'bash',
+    '-c',
+    cmd]
+    try:
+        resp = stream(v1.connect_get_namespaced_pod_exec, pod, ns,
+                    command=exec_command,container=container,
+                  stderr=True, stdin=False,
+                  stdout=True, tty=False)
+        if my_panel == True:
+            return f'''{resp}'''
+        else:
+            print(f''':::[#f92572 bold]{pod}/{container}[/]:::''')
+            print(f'''{resp}''')
+            return
+    except:
+        if my_panel == True:
+            return None
+        else:
+            print(f''':::[#f92572 bold]{pod}/{container}[/]::: Not Working''')
+            return
+
+def main():
+    parser = argparse.ArgumentParser(description=description,formatter_class=RawTextHelpFormatter)
+    #group = parser.add_mutually_exclusive_group()
+    #group.add_argument("-v", "--verbose", action="store_true")
+    #group.add_argument("-q", "--quiet", action="store_true")
+    parser.add_argument("-n", "--namespace", action="store", dest="nameSpaces", required=True, default=None,  help="namespace")
+    parser.add_argument("-p", "--pod", action="store", dest="pods", required=False, default=None, help="pod")
+    parser.add_argument("-c", "--container", action="store", dest="containers", required=False, default=None, help="the containers")
+    parser.add_argument("-q", "--querycommand", action="store", dest="query_command", required=True, default=None, help="the query command quoted with either single or double quote")
+    parser.add_argument("-t", "--table", action="store_true", dest="table_mode", required=False, default=False, help="the table mode")
+
+    args = parser.parse_args()
+
+    ns = args.nameSpaces.lower()
+    pod_list = []
+
+    config.load_kube_config()
+    v1 = client.CoreV1Api()
+    console = Console()
+
+    full_list = {}
+
+    #full_list = getAllNsPodContainer_Dict(v1)
+    full_list = getTargetNsPodContainer_Dict(v1,ns)
+
+    treatPodList = []
+
+    if args.pods:
+        pod_list = args.pods.split(",")
+        for i in full_list[ns].keys():
+            if any(s in i for s in pod_list):
+                treatPodList.append(i)
+    else:
+        treatPodList = [*full_list[ns]]
+    #print(treatPodList)
+
+    treatPodList.sort(key=lambda treatPodList : (list(map(str, re.findall(r'-\w+\-', treatPodList)))[0],list(map(int, re.findall(r'-\d+', treatPodList)))[0]), reverse=True)
+    try:
+        exec_command = args.query_command
+    except:
+        print(f'''[bold red blink]-q with quoted query command is mandatory [/]''')
+        console = Console()
+        md = Markdown(MARKDOWN)
+        console.print(md)
+        exit(0)
+
+
+    try:
+        if args.table_mode:
+            result_renderables = []
+            for i in treatPodList:
+                if len(full_list[ns][i]) == 1:
+                    if execPodCmd(v1,ns,i,exec_command,True):
+                        result_renderables.append(Panel(execPodCmd(v1,ns,i,exec_command,True),title=f'[b red]{i}[/]',expand=False))
+                elif len(full_list[ns][i]) > 1 and args.containers:
+                    if execContainerCmd(v1,ns,i,exec_command,args.containers,True):
+                        result_renderables.append(Panel(execContainerCmd(v1,ns,i,exec_command,args.containers,True),title=f'[b red]{i}[/]',expand=False))
+
+                else:
+                    for container in full_list[ns][i]:
+                        if execContainerCmd(v1,ns,i,exec_command,container,True):
+                            result_renderables.append(Panel(execContainerCmd(v1,ns,i,exec_command,container,True),title=f'[b red]{i}[/]',expand=False))
+
+            #result_renderables = [Panel(execPodCmd(v1,ns,i,cmd,True),title=f'[b red]{i}[/]',expand=False) for i in treatPodList if not execPodCmd(v1,ns,i,cmd,True) continue]
+            console.print(Columns(result_renderables))
+        else:
+            for i in treatPodList:
+                if len(full_list[ns][i]) == 1:
+                    execPodCmd(v1,ns,i,exec_command,False)
+                elif len(full_list[ns][i]) > 1 and args.containers:
+                    execContainerCmd(v1,ns,i,exec_command,args.containers,False)
+                else:
+                    for container in full_list[ns][i]:
+                        execContainerCmd(v1,ns,i,exec_command,container,False)
+    #except:
+    #    pass
+    except:
+        print(f'''[bold red blink]Please check if you provide the correct inputs[/]''')
+        console = Console()
+        md = Markdown(MARKDOWN)
+        console.print(md)
+        exit(0)
+
+
+if __name__ == '__main__':
+
+    main()
