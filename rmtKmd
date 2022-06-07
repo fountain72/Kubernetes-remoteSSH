@@ -43,7 +43,7 @@ Cheat sheet:
    rmtKmd -n NAMESPACES -p aa-0,bb-0 -q "date;time"
    rmtKmd -n NAMESPACES -p=-aa -q "date;time"
 
-3) To run "cli" on mavenir platforms, for command option please refer the example below
+3) To run multiline command option please refer the example below
 
    rmtKmd -n NAMESPACES -p NAMESPACES-aa-0 -q "cli << EOF
    > show table
