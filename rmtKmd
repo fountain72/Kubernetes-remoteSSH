@@ -72,9 +72,7 @@ MARKDOWN = """
 3. rmtKmd -n NAMESPACES -q "readShm" -t  #(show in panel version)
 ```
 """
-# console = Console()
-#md = Markdown(MARKDOWN)
-# console.print(md)
+
 
 def getAllNsPodContainer_Dict(v1):
     ret = v1.list_pod_for_all_namespaces(watch=False)
@@ -164,9 +162,6 @@ def execContainerCmd(v1,ns,pod, cmd,container,my_panel):
 
 def main():
     parser = argparse.ArgumentParser(description=description,formatter_class=RawTextHelpFormatter)
-    #group = parser.add_mutually_exclusive_group()
-    #group.add_argument("-v", "--verbose", action="store_true")
-    #group.add_argument("-q", "--quiet", action="store_true")
     parser.add_argument("-n", "--namespace", action="store", dest="nameSpaces", required=True, default=None,  help="namespace")
     parser.add_argument("-p", "--pod", action="store", dest="pods", required=False, default=None, help="pod")
     parser.add_argument("-c", "--container", action="store", dest="containers", required=False, default=None, help="the containers")
@@ -184,7 +179,6 @@ def main():
 
     full_list = {}
 
-    #full_list = getAllNsPodContainer_Dict(v1)
     full_list = getTargetNsPodContainer_Dict(v1,ns)
 
     treatPodList = []
@@ -196,7 +190,7 @@ def main():
                 treatPodList.append(i)
     else:
         treatPodList = [*full_list[ns]]
-    #print(treatPodList)
+
 
     treatPodList.sort(key=lambda treatPodList : (list(map(str, re.findall(r'-\w+\-', treatPodList)))[0],list(map(int, re.findall(r'-\d+', treatPodList)))[0]), reverse=True)
     try:
@@ -225,7 +219,6 @@ def main():
                         if execContainerCmd(v1,ns,i,exec_command,container,True):
                             result_renderables.append(Panel(execContainerCmd(v1,ns,i,exec_command,container,True),title=f'[b red]{i}[/]',expand=False))
 
-            #result_renderables = [Panel(execPodCmd(v1,ns,i,cmd,True),title=f'[b red]{i}[/]',expand=False) for i in treatPodList if not execPodCmd(v1,ns,i,cmd,True) continue]
             console.print(Columns(result_renderables))
         else:
             for i in treatPodList:
@@ -236,8 +229,7 @@ def main():
                 else:
                     for container in full_list[ns][i]:
                         execContainerCmd(v1,ns,i,exec_command,container,False)
-    #except:
-    #    pass
+
     except:
         print(f'''[bold red blink]Please check if you provide the correct inputs[/]''')
         console = Console()
