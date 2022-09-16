@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import sys,argparse,re
+import sys,argparse,re,paramiko
 from argparse import RawTextHelpFormatter
 from kubernetes import  client,config
 from kubernetes.stream import stream
@@ -22,7 +22,7 @@ description = '''
 
 MWP Remote Commands to send commands across all PODs/Containers within the same Namespace.
 
-version 2.0    02/26/2022
+version 2.2.1    09/08/2022
 
 Type -h or --help for a full list of available options.
 
@@ -39,26 +39,29 @@ Cheat sheet:
 
    example:
 
-   rmtKmd -n NAMESPACES -p aa,bb -q "date;time"
-   rmtKmd -n NAMESPACES -p aa-0,bb-0 -q "date;time"
-   rmtKmd -n NAMESPACES -p=-aa -q "date;time"
+   rmtKmd -n NAMESPACES -p PODA,PODB -q "date;time"
+   rmtKmd -n NAMESPACES -p PODA,POD-0 -q "date;time"
+   rmtKmd -n NAMESPACES -p=-POD -q "date;time"
 
-3) To run multiline command option please refer the example below
+3) To run "cli" on mavenir platforms, for command option please refer the example below
 
-   rmtKmd -n NAMESPACES -p NAMESPACES-aa-0 -q "cli << EOF
+   rmtKmd -n NAMESPACES -p POD-0 -q "cli << EOF
    > show table
    > EOF"
 
-
+4) To send commands to master and(with",") or worker nodes
+   rmtKmd -o master,worker -q "date"
 '''
 
 MARKDOWN = """
 # **rmtKmd**
 
 > MWP Remote Command tools to send commands across all PODs/Containers within the same Namespace.
-> * Alex Lu, yanfeng.lu@gmail.com
+> * Alex Lu, yanfeng.lu@t-mobile.com
 > * version 1.0 02/12/2022
 > * version 2.0 02/26/2022
+> * version 2.1 07/12/2022
+> * version 2.2 09/08/2022
 
 
 
@@ -67,11 +70,58 @@ MARKDOWN = """
 
 ## Example
 ```bash
-1. rmtKmd -n NAMESPACES -p XXXXX -q "date"
+1. rmtKmd -n NAMESPACES -p PODA -q "date"
 2. rmtKmd -n NAMESPACES -q "pgrep xagt" # default choose 'all' for POD and containers under the POD
-3. rmtKmd -n NAMESPACES -q "readShm" -t  #(show in panel version)
+3. rmtKmd -n NAMESPACES -q "date" -t  #(show in panel version)
 ```
 """
+
+
+def alphaNumOrder(string):
+   """ Returns all numbers on 5 digits to let sort the string with numeric order.
+   Ex: alphaNumOrder("a6b12.125")  ==> "a00006b00012.00125"
+   """
+   import re
+   return ''.join([format(int(x), '0100d') if x.isdigit()
+                   else x for x in re.split(r'(\d+)', string)])
+
+def getTreatNodesList(v1,list):
+    NodeFullList = []
+    treatNodesList = []
+    nodes_list = v1.list_node()
+    for i in nodes_list.items:
+        NodeFullList.append(i.metadata.name)
+    NodeFullList.sort(key=alphaNumOrder)
+    for i in NodeFullList:
+        if any(s in i for s in list):
+            treatNodesList.append(i)
+    return treatNodesList
+
+
+def NodeCmd(node,cmd,my_panel):
+    mySSHK = '/home/mwp_admin/.ssh/id_rsa.pub'
+    sshcon = paramiko.SSHClient()  # will create the object
+    sshcon.set_missing_host_key_policy(paramiko.AutoAddPolicy()) # no known_hosts error
+    sshcon.connect(hostname=node, username='mwp_admin',key_filename=mySSHK,timeout=5) # no passwd needed
+    #OOR_cmd = f'''rmtCmd "service IMS stop;sleep;service IMS start;" {blade}'''
+    command = f"""source /etc/profile &>/dev/null; {cmd}"""
+    stdin, stdout, stderr= sshcon.exec_command(command)
+    try:
+        resp=stdout.read().decode()
+        if my_panel == True:
+            return f'''{resp}'''
+        else:
+            console.print(f''':::[#f92572 bold]{node}[/]:::''')
+            console.print(f'''{resp}''')
+            return
+    except:
+        if my_panel == True:
+            return None
+        else:
+            console.print(f''':::[#f92572 bold]{node}[/]::: Not Working''')
+            return
+
+
 
 
 def getAllNsPodContainer_Dict(v1):
@@ -87,7 +137,7 @@ def getAllNsPodContainer_Dict(v1):
 
 def getTargetNsPodContainer_Dict(v1,ns):
     targetNs = ns
-    ret = v1.list_pod_for_all_namespaces(watch=False)
+    ret = v1.list_namespaced_pod(ns)
 
     full_dict={}
 
@@ -95,7 +145,9 @@ def getTargetNsPodContainer_Dict(v1,ns):
         if i.metadata.namespace == targetNs:
             ns, pod, containers = i.metadata.namespace, i.metadata.name, [y.name for y in i.spec.containers]
             full_dict.setdefault(ns,{})[pod] = containers
-
+        else:
+            console.print(f''':exclamation_mark: [bold yellow]Namespace not exist!''')
+    #console.print(full_dict)
     return full_dict
 
 def genTargetNsPod_Dict(v1,ns):
@@ -107,11 +159,6 @@ def genTargetNsPod_Dict(v1,ns):
         ns_dict['all'] = [ns_dict]
     for pod in pod_list.items:
         ns_dict['all'].append(pod.metadata.name)
-    test_list = ns_dict['all']
-    import re
-    test_list.sort(key=lambda test_list : (list(map(str, re.findall(r'-\w+\-', test_list)))[0],list(map(int, re.findall(r'-\d+', test_list)))[0]), reverse=True)
-    for j, i in groupby(test_list,lambda a: a.split('-')[1]):
-        ns_dict[j]=list(i)
     return ns_dict
 
 def execPodCmd(v1,ns,pod,cmd,my_panel):
@@ -127,14 +174,14 @@ def execPodCmd(v1,ns,pod,cmd,my_panel):
         if my_panel == True:
             return f'''{resp}'''
         else:
-            print(f''':::[#f92572 bold]{pod}[/]:::''')
-            print(f'''{resp}''')
+            console.print(f''':::[#f92572 bold]{pod}[/]:::''')
+            console.print(f'''{resp}''')
             return
     except:
         if my_panel == True:
             return None
         else:
-            print(f''':::[#f92572 bold]{pod}[/]::: Not Working''')
+            console.print(f''':::[#f92572 bold]{pod}[/]::: :exclamation_mark: Not Working''')
             return
 
 def execContainerCmd(v1,ns,pod, cmd,container,my_panel):
@@ -150,94 +197,99 @@ def execContainerCmd(v1,ns,pod, cmd,container,my_panel):
         if my_panel == True:
             return f'''{resp}'''
         else:
-            print(f''':::[#f92572 bold]{pod}/{container}[/]:::''')
-            print(f'''{resp}''')
+            console.print(f''':::[#f92572 bold]{pod}/{container}[/]:::''')
+            console.print(f'''{resp}''')
             return
     except:
         if my_panel == True:
             return None
         else:
-            print(f''':::[#f92572 bold]{pod}/{container}[/]::: Not Working''')
+            console.print(f''':::[#f92572 bold]{pod}/{container}[/]::: :exclamation_mark: Not Working''')
             return
 
 def main():
     parser = argparse.ArgumentParser(description=description,formatter_class=RawTextHelpFormatter)
-    parser.add_argument("-n", "--namespace", action="store", dest="nameSpaces", required=True, default=None,  help="namespace")
-    parser.add_argument("-p", "--pod", action="store", dest="pods", required=False, default=None, help="pod")
-    parser.add_argument("-c", "--container", action="store", dest="containers", required=False, default=None, help="the containers")
     parser.add_argument("-q", "--querycommand", action="store", dest="query_command", required=True, default=None, help="the query command quoted with either single or double quote")
     parser.add_argument("-t", "--table", action="store_true", dest="table_mode", required=False, default=False, help="the table mode")
+    parser.add_argument("-p", "--pod", action="store", dest="pods", required=False, default=None, help="pod")
+    parser.add_argument("-c", "--container", action="store", dest="containers", required=False, default=None, help="the containers")
+    group = parser.add_mutually_exclusive_group(required=True)
+
+
+    #group1
+    group.add_argument("-n", "--namespace", action="store", dest="nameSpaces", required=False, default=None,  help="namespace")
+
+
+    #group2
+    group.add_argument("-o","--node", action="store", dest="nodes", required=False, default=None,  help="nodes")
 
     args = parser.parse_args()
 
-    ns = args.nameSpaces.lower()
-    pod_list = []
-
     config.load_kube_config()
     v1 = client.CoreV1Api()
-    console = Console()
+    exec_command = args.query_command
 
-    full_list = {}
-
-    full_list = getTargetNsPodContainer_Dict(v1,ns)
-
-    treatPodList = []
-
-    if args.pods:
-        pod_list = args.pods.split(",")
-        for i in full_list[ns].keys():
-            if any(s in i for s in pod_list):
-                treatPodList.append(i)
+    if args.nodes:
+        if args.nameSpaces or args.pods or args.containers:
+            console.print("Please choose EITHER nodes with -o OR  NameSpaces with -n ...")
+            sys.exit(2)
+        else:
+            treatNodesList=[]
+            node_list = args.nodes.lower().split(",")
+            treatNodesList = getTreatNodesList(v1,node_list)
+            if len(treatNodesList) == 0:
+                console.print("node list returns empty, please check the node info you provided!")
+            else:
+                try:
+                    result_renderables = []
+                    for i in treatNodesList:
+                        result_renderables.append(Panel(NodeCmd(i,exec_command,True),title=f'[b red]{i}[/]',expand=False)) if args.table_mode else NodeCmd(i,exec_command,False)
+                    if args.table_mode:
+                        console.print(Columns(result_renderables))
+                except:
+                    console.print("node list returns empty, please check the node info you provided!")
     else:
-        treatPodList = [*full_list[ns]]
+        ns = args.nameSpaces.lower()
+        pod_list = []
+        full_list = {}
+        #full_list = getAllNsPodContainer_Dict(v1)
+        try:
+            full_list = getTargetNsPodContainer_Dict(v1,ns)
+            treatPodList = []
+            if args.pods:
+                pod_list = args.pods.split(",")
+                for i in full_list[ns].keys():
+                    if any(s in i for s in pod_list):
+                        treatPodList.append(i)
+            else:
+                treatPodList = [*full_list[ns]]
+        except:
+            console.print(f''':exclamation_mark: [bold red blink]Please check if you provide the correct inputs[/]''')
+            sys.exit(0)
 
+        treatPodList.sort(key=alphaNumOrder)
 
-    treatPodList.sort(key=lambda treatPodList : (list(map(str, re.findall(r'-\w+\-', treatPodList)))[0],list(map(int, re.findall(r'-\d+', treatPodList)))[0]), reverse=True)
-    try:
-        exec_command = args.query_command
-    except:
-        print(f'''[bold red blink]-q with quoted query command is mandatory [/]''')
-        console = Console()
-        md = Markdown(MARKDOWN)
-        console.print(md)
-        exit(0)
-
-
-    try:
-        if args.table_mode:
+        try:
             result_renderables = []
             for i in treatPodList:
                 if len(full_list[ns][i]) == 1:
-                    if execPodCmd(v1,ns,i,exec_command,True):
-                        result_renderables.append(Panel(execPodCmd(v1,ns,i,exec_command,True),title=f'[b red]{i}[/]',expand=False))
+                        result_renderables.append(Panel(execPodCmd(v1,ns,i,exec_command,args.table_mode),title=f'[b red]{i}[/]',expand=False)) if args.table_mode else execPodCmd(v1,ns,i,exec_command,args.table_mode)
                 elif len(full_list[ns][i]) > 1 and args.containers:
-                    if execContainerCmd(v1,ns,i,exec_command,args.containers,True):
-                        result_renderables.append(Panel(execContainerCmd(v1,ns,i,exec_command,args.containers,True),title=f'[b red]{i}[/]',expand=False))
+                    result_renderables.append(Panel(execContainerCmd(v1,ns,i,exec_command,args.containers,args.table_mode),title=f'[b red]{i}[/]',expand=False)) if args.table_mode else execContainerCmd(v1,ns,i,exec_command,args.containers,args.table_mode)
 
                 else:
                     for container in full_list[ns][i]:
-                        if execContainerCmd(v1,ns,i,exec_command,container,True):
-                            result_renderables.append(Panel(execContainerCmd(v1,ns,i,exec_command,container,True),title=f'[b red]{i}[/]',expand=False))
-
-            console.print(Columns(result_renderables))
-        else:
-            for i in treatPodList:
-                if len(full_list[ns][i]) == 1:
-                    execPodCmd(v1,ns,i,exec_command,False)
-                elif len(full_list[ns][i]) > 1 and args.containers:
-                    execContainerCmd(v1,ns,i,exec_command,args.containers,False)
-                else:
-                    for container in full_list[ns][i]:
-                        execContainerCmd(v1,ns,i,exec_command,container,False)
-
-    except:
-        print(f'''[bold red blink]Please check if you provide the correct inputs[/]''')
-        console = Console()
-        md = Markdown(MARKDOWN)
-        console.print(md)
-        exit(0)
+                        result_renderables.append(Panel(execContainerCmd(v1,ns,i,exec_command,container,args.table_mode),title=f'[b red]{i}[/]',expand=False)) if args.table_mode else execContainerCmd(v1,ns,i,exec_command,container,args.table_mode)
+            if args.table_mode:
+                console.print(Columns(result_renderables))
+        except:
+            console.print(f''':exclamation_mark: [bold red blink]Please check if you provide the correct inputs[/]''')
+            md = Markdown(MARKDOWN)
+            console.print(md)
+            exit(0)
 
 
 if __name__ == '__main__':
-
-    main()
+    console = Console()
+    with console.status(' :beer: [bold magenta]Work in progress...') as status:
+        main()
